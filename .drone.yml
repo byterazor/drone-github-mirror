@@ -1,0 +1,150 @@
+---
+
+kind: pipeline
+type: kubernetes
+name: build-amd64
+platform:
+  arch: amd64
+node_selector:
+  kubernetes.io/arch: amd64
+  federationhq.de/location: Blumendorf
+  federationhq.de/compute: true
+
+volumes:
+  - name: fedhq-ca-crt
+    config_map:
+      name: fedhq-ca-crt
+      default_mode: 420     # same as 644 in octal, or u+w,a+r
+      optional: false
+
+steps:
+  - name: build amd64
+    image: quay.io/buildah/stable:v1.36
+    privileged: true
+    volumes:
+      - name: fedhq-ca-crt
+        path: /etc/ssl/certs2/
+    commands:
+      - scripts/setupEnvironment.sh
+      - buildah bud --network host -t "registry.cloud.federationhq.de/drone-github-mirror:latest-amd64"  --arch amd64 .
+      - buildah push --all registry.cloud.federationhq.de/drone-github-mirror:latest-amd64
+---
+
+kind: pipeline
+type: kubernetes
+name: build-arm64
+platform:
+  arch: arm64
+node_selector:
+  kubernetes.io/arch: arm64
+  federationhq.de/location: Blumendorf
+  federationhq.de/compute: true
+
+volumes:
+- name: fedhq-ca-crt
+  config_map:
+    name: fedhq-ca-crt
+    default_mode: 420     # same as 644 in octal, or u+w,a+r
+    optional: false
+
+steps:
+  - name: build arm64
+    image: quay.io/buildah/stable:v1.36
+    privileged: true
+    volumes:
+    - name: fedhq-ca-crt
+      path: /etc/ssl/certs2/
+    commands:
+      - scripts/setupEnvironment.sh
+      - buildah bud --network host -t "registry.cloud.federationhq.de/drone-github-mirror:latest-arm64" --arch arm64 .
+      - buildah push --all registry.cloud.federationhq.de/drone-github-mirror:latest-arm64
+---
+kind: pipeline
+type: kubernetes
+name: push
+node_selector:
+  kubernetes.io/arch: amd64
+  federationhq.de/location: Blumendorf
+  federationhq.de/compute: true
+
+volumes:
+- name: fedhq-ca-crt
+  config_map:
+    name: fedhq-ca-crt
+    default_mode: 420     # same as 644 in octal, or u+w,a+r
+    optional: false
+
+steps:
+  - name: push
+    image: quay.io/buildah/stable:v1.36
+    privileged: true
+    environment:
+      USERNAME:
+        from_secret: username
+      PASSWORD:
+        from_secret: password
+    volumes:
+    - name: fedhq-ca-crt
+      path: /etc/ssl/certs2/
+    commands:
+      - scripts/setupEnvironment.sh
+      - buildah manifest create drone-github-mirror:latest registry.cloud.federationhq.de/drone-github-mirror:latest-arm64 registry.cloud.federationhq.de/drone-github-mirror:latest-amd64
+      - buildah manifest push --all drone-github-mirror:latest docker://registry.cloud.federationhq.de/drone-github-mirror:latest
+      - buildah login -u $${USERNAME} -p $${PASSWORD} registry.hub.docker.com
+      - buildah manifest push --all drone-github-mirror:latest docker://registry.hub.docker.com/byterazor/drone-github-mirror:latest 
+      - buildah manifest delete drone-github-mirror:latest
+  - name: push readme
+    image: byterazor/drone-docker-readme-push:latest
+    settings:
+      REPOSITORY_NAME: byterazor/drone-github-mirror
+      FILENAME: README.md
+      USERNAME: 
+        from_secret: username
+      PASSWORD: 
+        from_secret: password
+depends_on:
+  - build-amd64
+  - build-arm64
+
+---
+
+kind: pipeline
+type: kubernetes
+name: mirror-to-github
+node_selector:
+  kubernetes.io/arch: amd64
+  federationhq.de/location: Blumendorf
+  federationhq.de/compute: true
+steps:
+  - name: github-mirror
+    image: registry.cloud.federationhq.de/drone-github-mirror:latest
+    pull: always
+    settings:
+      GH_TOKEN: 
+        from_secret: GH_TOKEN
+      GH_REPO: "byterazor/drone-github-mirror"
+      GH_REPO_DESC: "drone plugin to mirror a repo to github"
+      GH_REPO_HOMEPAGE: "https://gitea.federationhq.de/Container/drone-github-mirror"
+depends_on:
+    - push
+
+---
+kind: secret
+name: username
+get:
+  path: docker
+  name: username
+
+---
+kind: secret
+name: password
+get:
+  path: docker
+  name: secret
+
+--- 
+kind: secret
+name: GH_TOKEN
+get:
+  path: github
+  name: token
